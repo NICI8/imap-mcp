@@ -443,3 +443,36 @@ describe('IMAP_TRUSTED_AUTHSERV_ID', () => {
     );
   });
 });
+
+describe('the draft attachment limits', () => {
+  it('default to 2 MiB per attachment and 8 MiB per draft', () => {
+    const { imap } = loadConfig(env());
+    expect(imap.draftAttachmentMaxBytes).toBe(2 * 1024 * 1024);
+    expect(imap.draftMaxBytes).toBe(8 * 1024 * 1024);
+  });
+
+  it('read IMAP_ATTACHMENT_MAX_BYTES and IMAP_DRAFT_MAX_BYTES', () => {
+    const { imap } = loadConfig(
+      env({ IMAP_ATTACHMENT_MAX_BYTES: '1000', IMAP_DRAFT_MAX_BYTES: '5000' })
+    );
+    expect(imap.draftAttachmentMaxBytes).toBe(1000);
+    expect(imap.draftMaxBytes).toBe(5000);
+  });
+
+  it('leave the inline read limit alone', () => {
+    const { imap } = loadConfig(env({ IMAP_ATTACHMENT_MAX_BYTES: '1000' }));
+    expect(imap.maxAttachmentBytes).toBe(1024 * 1024);
+  });
+
+  it.each(['IMAP_ATTACHMENT_MAX_BYTES', 'IMAP_DRAFT_MAX_BYTES'])(
+    'refuses a malformed or oversized %s at startup',
+    (name) => {
+      expect(refuses({ [name]: '2MB' })).toContain(
+        `${name} must be a positive integer`
+      );
+      expect(refuses({ [name]: String(65 * 1024 * 1024) })).toContain(
+        `${name} must not exceed ${64 * 1024 * 1024}`
+      );
+    }
+  );
+});

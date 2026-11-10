@@ -232,6 +232,8 @@ describe('tool registration', () => {
           maxDownloadBytes: 1024,
           maxExtractBytes: 1024,
           commandTimeoutMs: 30_000,
+          draftAttachmentMaxBytes: 1024,
+          draftMaxBytes: 1024,
         },
       },
     });

@@ -18,6 +18,8 @@ All configuration is by environment variable; there is no config file.
 | `IMAP_INSECURE_TLS` | no       | `false`    | `true` accepts self-signed certificates, scoped to this connection            |
 | `IMAP_TRUSTED_AUTHSERV_ID` | no | —      | The authserv-id your provider stamps; without it every verdict is forgeable   |
 | `IMAP_COMMAND_TIMEOUT_SECONDS` | no | `30` | Seconds one IMAP command may take, from 1 to 600                          |
+| `IMAP_ATTACHMENT_MAX_BYTES` | no | `2097152` | Fork: largest single attachment `save_draft` attaches, at most 64 MiB |
+| `IMAP_DRAFT_MAX_BYTES` | no | `8388608` | Fork: largest total of all attachments of one draft, at most 64 MiB |
 | `ELICITATION`       | no       | `true`     | `false` replaces the approval dialog with the two-call token. **Not prefixed** |
 
 There are also `IMAP_MAX_MESSAGES`, `IMAP_MAX_ATTACHMENT_BYTES`,

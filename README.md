@@ -15,6 +15,11 @@
 [![sponsor](https://img.shields.io/badge/sponsor-ni--c-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ni-c)
 <!-- badges: end -->
 
+> **Fork.** `@nici8/imap-mcp` is a fork of [`@ni-c/imap-mcp`](https://github.com/ni-c/imap-mcp)
+> by Willi Thiel (MIT). It adds attachments to `save_draft`: base64 files from the call, or
+> attachments copied by the server from a message in the mailbox. Everything else follows
+> upstream. See [Draft attachments](#draft-attachments) and the changelog.
+
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for any IMAP
 mailbox. It speaks IMAP rather than one vendor's API, so it works with whatever provider you
 already have.
@@ -123,6 +128,8 @@ guard. See [Asking a person](https://imap-mcp.ni-c.de/guide/approval).
 | `IMAP_MAX_DOWNLOAD_BYTES`      | no       | `26214400`    | Ceiling for writing one to disk                              |
 | `IMAP_MAX_EXTRACT_BYTES`       | no       | `10485760`    | Ceiling for reading a document's text; max `67108864`        |
 | `IMAP_COMMAND_TIMEOUT_SECONDS` | no       | `30`          | Seconds one IMAP command may take; max `600`                 |
+| `IMAP_ATTACHMENT_MAX_BYTES`    | no       | `2097152`     | Fork: ceiling for one `save_draft` attachment; max 64 MiB    |
+| `IMAP_DRAFT_MAX_BYTES`         | no       | `8388608`     | Fork: ceiling for all attachments of one draft; max 64 MiB   |
 | `IMAP_ATTACHMENT_TYPES`        | no       | see below     | Comma-separated content-type allowlist                       |
 | `IMAP_DOWNLOAD_DIR`            | no       | —             | Setting it allows saving attachments there                   |
 | `IMAP_INSECURE_TLS`            | no       | `false`       | Exactly `true` accepts a self-signed certificate             |
@@ -131,6 +138,27 @@ guard. See [Asking a person](https://imap-mcp.ni-c.de/guide/approval).
 Booleans are compared against the literal string `true`; `1`, `yes` and `True` are not true.
 `IMAP_READ_ONLY` is the mirror image: only the literal `false` turns it off, so a typo leaves
 the write tools unregistered.
+
+## Draft attachments
+
+`save_draft` takes an optional `attachments` array of up to 20 entries, each one of two shapes:
+
+- `{ "filename", "content_type", "data_base64" }`: the file comes with the call. The type must
+  be in `IMAP_ATTACHMENT_TYPES`, the filename loses any directory part and every control or
+  invisible character, and the decoded size must stay within `IMAP_ATTACHMENT_MAX_BYTES`.
+- `{ "source_uid", "part_id", "mailbox"? }`: the server fetches that attachment of a message
+  in the mailbox itself (part ids as `get_attachments` lists them) and attaches it with its
+  name and type unchanged. The bytes never pass through the tool call. The part must be one
+  `get_attachments` would list and allow; the body of a message cannot be lifted this way.
+
+Both are refused when the name or the bytes are executable. All attachments of one draft
+together must stay within `IMAP_DRAFT_MAX_BYTES`. The draft is built by nodemailer's
+MailComposer as `multipart/mixed` (text part first, every file with
+`Content-Disposition: attachment` and base64 transfer encoding) and appended to the Drafts
+folder with `\Draft`, threaded through `reply_to_uid` as before. Without attachments the
+draft stays the plain-text message upstream builds. `IMAP_ATTACHMENT_MAX_BYTES` is not
+`IMAP_MAX_ATTACHMENT_BYTES`: the latter bounds what is _read_ into the model's context, the
+former what is _written_ into a draft. Nothing is sent; this server still cannot send mail.
 
 `IMAP_COMMAND_TIMEOUT_SECONDS` applies to each IMAP command, not to a whole tool call, and your
 MCP client has a deadline of its own; read

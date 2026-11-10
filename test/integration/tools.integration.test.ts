@@ -275,6 +275,84 @@ describe('flags, mailboxes and moving', () => {
     });
     expect(drafts).toContain('Integration draft');
   });
+
+  it('saves a draft with an attachment from the call and one copied from a message', async () => {
+    // A 1x1 PNG in the call, and the PDF of the documents message copied by
+    // the server itself. Read back through get_attachments from the Drafts
+    // folder, so what is checked is what GreenMail stored and parsed.
+    const png =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    const source = await uidOf(SUBJECTS.documents);
+    const listed = parse<{
+      attachments: { part_id: string; filename: string }[];
+    }>(await asking.call('get_attachments', { uid: source }));
+    const pdf = listed.attachments.find((a) => a.filename === 'rechnung.pdf');
+    expect(pdf).toBeDefined();
+
+    const subject = 'Integration draft with attachments';
+    const saved = parse<{
+      attachments: { filename: string; source: string }[];
+    }>(
+      await asking.call('save_draft', {
+        to: ['someone@example.net'],
+        subject,
+        body: 'Zwei Anhänge.',
+        attachments: [
+          {
+            filename: 'pixel.png',
+            content_type: 'image/png',
+            data_base64: png,
+          },
+          { source_uid: source, part_id: pdf!.part_id },
+        ],
+      })
+    );
+    expect(saved.attachments.map((a) => a.source)).toEqual(['call', 'mailbox']);
+
+    const draft = await uidOf(subject, 'Drafts');
+    const stored = parse<{
+      attachments: {
+        part_id: string;
+        filename: string;
+        content_type: string;
+      }[];
+    }>(await asking.call('get_attachments', { uid: draft, mailbox: 'Drafts' }));
+    expect(stored.attachments.map((a) => [a.filename, a.content_type])).toEqual(
+      [
+        ['pixel.png', 'image/png'],
+        ['rechnung.pdf', 'application/pdf'],
+      ]
+    );
+
+    // An image comes back as an image block, not as text.
+    const picture = await asking.client.callTool({
+      name: 'get_attachments',
+      arguments: {
+        uid: draft,
+        mailbox: 'Drafts',
+        part_id: stored.attachments[0]!.part_id,
+        mode: 'inline',
+      },
+    });
+    const image = (
+      picture.content as Array<{ type: string; data?: string }>
+    ).find((block) => block.type === 'image');
+    expect(image?.data).toBe(png);
+
+    const text = await asking.call('get_attachments', {
+      uid: draft,
+      mailbox: 'Drafts',
+      part_id: stored.attachments[1]!.part_id,
+      mode: 'text',
+    });
+    expect(text).toContain('Rechnung 1200,00 EUR');
+
+    const listing = parse<Listing>(
+      await asking.call('list_messages', { mailbox: 'Drafts', limit: 50 })
+    );
+    const entry = listing.messages.find((m) => m.subject === subject);
+    expect(entry?.flags).toContain('\\Draft');
+  });
 });
 
 describe('the fallback path for a client with no dialog', () => {

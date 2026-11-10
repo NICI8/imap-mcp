@@ -61,6 +61,16 @@ export interface ImapConfig {
   maxExtractBytes: number;
   /** How long one IMAP command may take before the call is abandoned. */
   commandTimeoutMs: number;
+  /**
+   * Ceiling on one attachment of a draft (`save_draft` with `attachments`),
+   * whether its bytes arrive in the call or are copied from a message in the
+   * mailbox. A separate limit from `maxAttachmentBytes`, which bounds what is
+   * *read* into the model's context: this one bounds what is *written* into
+   * a message a person will later send.
+   */
+  draftAttachmentMaxBytes: number;
+  /** Ceiling on all attachments of one draft together. */
+  draftMaxBytes: number;
 }
 
 export interface Config {
@@ -134,6 +144,15 @@ const DEFAULT_MAX_EXTRACT_BYTES = 10 * 1024 * 1024;
  */
 const MAX_MAX_EXTRACT_BYTES = 64 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 30;
+/** Per draft attachment. Two megabytes is a photo or a scanned page. */
+const DEFAULT_DRAFT_ATTACHMENT_MAX_BYTES = 2 * 1024 * 1024;
+/** All attachments of one draft together. */
+const DEFAULT_DRAFT_MAX_BYTES = 8 * 1024 * 1024;
+/**
+ * Hard ceiling on both draft limits. The whole draft is built in memory before
+ * the APPEND, and most providers refuse a message above 25 to 50 MB anyway.
+ */
+const MAX_DRAFT_BYTES = 64 * 1024 * 1024;
 /** Refused above, not clamped: a value typed in milliseconds must not become hours. */
 const MAX_COMMAND_TIMEOUT_SECONDS = 600;
 const DEFAULT_SEEN_KEYWORD = 'AiSeen';
@@ -273,6 +292,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           'IMAP_COMMAND_TIMEOUT_SECONDS',
           MAX_COMMAND_TIMEOUT_SECONDS
         ) * 1000,
+      draftAttachmentMaxBytes: parseCount(
+        env.IMAP_ATTACHMENT_MAX_BYTES,
+        DEFAULT_DRAFT_ATTACHMENT_MAX_BYTES,
+        'IMAP_ATTACHMENT_MAX_BYTES',
+        MAX_DRAFT_BYTES
+      ),
+      draftMaxBytes: parseCount(
+        env.IMAP_DRAFT_MAX_BYTES,
+        DEFAULT_DRAFT_MAX_BYTES,
+        'IMAP_DRAFT_MAX_BYTES',
+        MAX_DRAFT_BYTES
+      ),
     },
     // Defaults to true, unlike the rest of the family — see the field comment.
     readOnly: env.IMAP_READ_ONLY !== 'false',

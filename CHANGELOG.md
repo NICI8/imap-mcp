@@ -12,6 +12,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      last in the file so the link definitions come along. -->
 <!-- #region changelog -->
 
+## [0.7.0-nml.1] - 2026-11-10
+
+Fork `@nici8/imap-mcp` of `@ni-c/imap-mcp` 0.7.0.
+
+### Added
+
+- `save_draft` takes an optional `attachments` array (up to 20). An entry is either
+  `{ filename, content_type, data_base64 }`, a file sent with the call, or
+  `{ source_uid, part_id, mailbox? }`, an attachment the server copies from a message in the
+  mailbox without its bytes passing through the call. A draft with attachments is built by
+  nodemailer's MailComposer as `multipart/mixed` with base64 parts and
+  `Content-Disposition: attachment`; without attachments the plain-text builder is unchanged.
+- `IMAP_ATTACHMENT_MAX_BYTES` (default 2 MiB) bounds one draft attachment and
+  `IMAP_DRAFT_MAX_BYTES` (default 8 MiB) all of them together, both at most 64 MiB.
+  `get_server_info` reports them as `limits.draft_attachment_max_bytes`,
+  `limits.draft_max_bytes` and `limits.draft_max_attachments`.
+- The `save_draft` result lists what was attached, with source, size and, for copied parts,
+  uid, part id and mailbox.
+
+### Security
+
+- Inline attachments must declare a type from `IMAP_ATTACHMENT_TYPES`, lose any path and every
+  control or invisible character in the filename, and are refused when the name or the bytes
+  are executable. Copied parts must be a part `get_attachments` lists and allows for that
+  message, so the body of a message cannot be lifted into a draft, and they go through the same
+  byte check. MailComposer runs with file and URL access disabled.
+
 ## [0.7.0] - 2026-11-04
 
 ### Added
@@ -854,6 +881,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every change to the mailbox is logged to stderr with UIDs and folder, never
   subjects.
 
+[0.7.0-nml.1]: https://github.com/NICI8/imap-mcp/releases/tag/v0.7.0-nml.1
 [0.7.0]: https://github.com/ni-c/imap-mcp/releases/tag/v0.7.0
 [0.6.0]: https://github.com/ni-c/imap-mcp/releases/tag/v0.6.0
 [0.5.3]: https://github.com/ni-c/imap-mcp/releases/tag/v0.5.3

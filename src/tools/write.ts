@@ -24,6 +24,17 @@ import {
   type ImapConnection,
 } from '../imap.js';
 import { buildDraft, fromIsAddress } from '../draft.js';
+import {
+  buildDraftWithAttachments,
+  inlineAttachment,
+  isMailboxAttachment,
+  mailboxAttachment,
+  MAX_DRAFT_ATTACHMENTS,
+  type AttachmentSummary,
+  type DraftAttachment,
+  type DraftAttachmentInput,
+} from '../draft-attachments.js';
+import { fetchOne } from './read.js';
 import { untrustedFields } from '../output-schema.js';
 import { errorResult, jsonResult, run, untrustedResult } from '../result.js';
 
@@ -687,7 +698,11 @@ export function registerWriteTools(
         'This server cannot send mail — the draft waits in the mailbox until a ' +
         'person opens it in their own mail client and sends it from there. ' +
         'That is deliberate: it keeps the composing useful while leaving the ' +
-        'decision to send with a human.',
+        'decision to send with a human. Optional attachments come either as ' +
+        'base64 in the call ({filename, content_type, data_base64}) or are ' +
+        'copied by this server from a message in the mailbox ({source_uid, ' +
+        'part_id, mailbox?}, part ids as get_attachments lists them), so ' +
+        'their bytes never pass through the call. Limits are in get_server_info.',
       inputSchema: z.object({
         to: addressListParam,
         cc: addressListParam.optional(),
@@ -710,6 +725,58 @@ export function registerWriteTools(
         mailbox: optionalMailboxParam.describe(
           'Where to look for reply_to_uid. Defaults to the configured mailbox.'
         ),
+        attachments: z
+          .array(
+            z.union([
+              z
+                .object({
+                  filename: z
+                    .string()
+                    .min(1)
+                    .max(255)
+                    .describe(
+                      'File name shown to the recipient. Any path is dropped.'
+                    ),
+                  content_type: z
+                    .string()
+                    .min(3)
+                    .max(255)
+                    .describe(
+                      'Media type, e.g. image/png. Must be in IMAP_ATTACHMENT_TYPES.'
+                    ),
+                  data_base64: z
+                    .string()
+                    .min(4)
+                    .max(base64Ceiling(config.imap.draftAttachmentMaxBytes))
+                    .describe('The file, standard base64 (no data: prefix).'),
+                })
+                .strict(),
+              z
+                .object({
+                  source_uid: uidParam.describe(
+                    'UID of the message the attachment is copied from.'
+                  ),
+                  part_id: z
+                    .string()
+                    .min(1)
+                    .max(64)
+                    .regex(
+                      /^[0-9]+(\.[0-9]+)*$/,
+                      'must be a MIME part number such as 2 or 1.2'
+                    )
+                    .describe('Part id as get_attachments lists it.'),
+                  mailbox: optionalMailboxParam.describe(
+                    'Mailbox of source_uid. Defaults to the configured mailbox.'
+                  ),
+                })
+                .strict(),
+            ])
+          )
+          .max(MAX_DRAFT_ATTACHMENTS)
+          .optional()
+          .describe(
+            'Files to attach. The draft becomes multipart/mixed; without attachments it stays plain text.'
+          ),
       }),
       annotations: {
         // Additive: it appends a message to the drafts folder. Two calls
@@ -740,18 +807,45 @@ export function registerWriteTools(
         flags: z
           .array(z.string())
           .describe('The flags the draft was stored with.'),
+        attachments: z
+          .array(
+            z.object({
+              filename: z.string(),
+              content_type: z.string(),
+              bytes: z.number().int(),
+              source: z.enum(['call', 'mailbox']),
+              source_uid: z.number().int().optional(),
+              part_id: z.string().optional(),
+              mailbox: z.string().optional(),
+            })
+          )
+          .optional()
+          .describe(
+            "What was attached, in order. Filenames are the sender's or the caller's; sanitised."
+          ),
         note: z.string(),
       }),
     },
-    async ({ to, cc, bcc, subject, body, reply_to_uid, mailbox }, mcp) =>
+    async (
+      { to, cc, bcc, subject, body, reply_to_uid, mailbox, attachments },
+      mcp
+    ) =>
       run(async () => {
         const signal = mcp.mcpReq.signal;
+        // Calls' own bytes are checked first: they cost nothing to refuse,
+        // and a draft that cannot be built should not first fetch anything.
+        const resolved = await resolveAttachments(
+          client,
+          config,
+          attachments ?? [],
+          signal
+        );
         const thread =
           reply_to_uid === undefined
             ? undefined
             : await client.threadHeaders(mailbox, reply_to_uid, signal);
 
-        const draft = buildDraft({
+        const input = {
           from: client.user,
           to,
           ...(cc === undefined ? {} : { cc }),
@@ -759,7 +853,14 @@ export function registerWriteTools(
           subject,
           body,
           ...(thread === undefined ? {} : { thread }),
-        });
+        };
+        const draft =
+          resolved.length === 0
+            ? buildDraft(input)
+            : await buildDraftWithAttachments(
+                input,
+                resolved.map((entry) => entry.attachment)
+              );
 
         const folder = await resolveDraftsMailbox(client, config, signal);
         // Selected read-write, not just connected: imapflow keeps only the
@@ -784,6 +885,15 @@ export function registerWriteTools(
               mailbox: folder,
               recipients: to.length + (cc?.length ?? 0) + (bcc?.length ?? 0),
               in_reply_to: thread?.messageId,
+              ...(resolved.length === 0
+                ? {}
+                : {
+                    attachments: resolved.length,
+                    attachment_bytes: resolved.reduce(
+                      (sum, entry) => sum + entry.attachment.content.length,
+                      0
+                    ),
+                  }),
             };
             await auditedWrite('save_draft', details, () =>
               withTimeout(
@@ -818,6 +928,9 @@ export function registerWriteTools(
               }),
           recipients: [...to, ...(cc ?? []), ...(bcc ?? [])],
           flags,
+          ...(resolved.length === 0
+            ? {}
+            : { attachments: resolved.map((entry) => entry.summary) }),
           note:
             'The draft is stored but not sent. This server has no way to send mail; open it in your mail client to send it.' +
             (dropped.length === 0
@@ -829,6 +942,98 @@ export function registerWriteTools(
         });
       })
   );
+}
+
+/** The longest base64 text that can decode to `bytes`, with room for line breaks. */
+function base64Ceiling(bytes: number): number {
+  const encoded = Math.ceil(bytes / 3) * 4;
+  return encoded + Math.ceil(encoded / 64) * 2 + 16;
+}
+
+/**
+ * Turns the `attachments` argument into checked bytes, in the order given.
+ *
+ * Inline attachments are decoded and checked before anything is fetched.
+ * Mailbox attachments are then fetched one by one, each with a ceiling of the
+ * smaller of the per-attachment limit and what is left of the per-draft limit,
+ * so a draft cannot be pushed past IMAP_DRAFT_MAX_BYTES by its last part.
+ */
+async function resolveAttachments(
+  client: ImapClient,
+  config: Config,
+  inputs: DraftAttachmentInput[],
+  signal: AbortSignal | undefined
+): Promise<Array<{ attachment: DraftAttachment; summary: AttachmentSummary }>> {
+  const out: Array<
+    { attachment: DraftAttachment; summary: AttachmentSummary } | undefined
+  > = inputs.map(() => undefined);
+  let total = 0;
+  const overTotal = (bytes: number): ToolInputError =>
+    new ToolInputError(
+      `imap-mcp: the attachments of this draft come to more than IMAP_DRAFT_MAX_BYTES (${config.imap.draftMaxBytes}); at least ${bytes} bytes. Nothing was saved.`
+    );
+
+  inputs.forEach((input, index) => {
+    if (isMailboxAttachment(input)) return;
+    const attachment = inlineAttachment(input, config, index);
+    total += attachment.content.length;
+    if (total > config.imap.draftMaxBytes) throw overTotal(total);
+    out[index] = {
+      attachment,
+      summary: {
+        filename: attachment.filename,
+        content_type: attachment.contentType,
+        bytes: attachment.content.length,
+        source: 'call',
+      },
+    };
+  });
+
+  for (const [index, input] of inputs.entries()) {
+    if (!isMailboxAttachment(input)) continue;
+    const remaining = config.imap.draftMaxBytes - total;
+    if (remaining <= 0) throw overTotal(total + 1);
+    const perFile = config.imap.draftAttachmentMaxBytes;
+    const [maxBytes, limitName] =
+      remaining < perFile
+        ? [remaining, 'what IMAP_DRAFT_MAX_BYTES leaves for it']
+        : [perFile, 'IMAP_ATTACHMENT_MAX_BYTES'];
+    const path = input.mailbox ?? client.defaultMailbox;
+    const attachment = await client.withMailbox(
+      input.mailbox,
+      true,
+      signal,
+      (connection) =>
+        mailboxAttachment(
+          connection,
+          input,
+          config,
+          maxBytes,
+          limitName,
+          async (conn, uid) =>
+            (
+              await fetchOne(conn, uid, client.commandTimeoutMs, {
+                uid: true,
+                bodyStructure: true,
+              })
+            ).bodyStructure
+        )
+    );
+    total += attachment.content.length;
+    out[index] = {
+      attachment,
+      summary: {
+        filename: attachment.filename,
+        content_type: attachment.contentType,
+        bytes: attachment.content.length,
+        source: 'mailbox',
+        source_uid: input.source_uid,
+        part_id: input.part_id,
+        mailbox: path,
+      },
+    };
+  }
+  return out.filter((entry) => entry !== undefined);
 }
 
 /**

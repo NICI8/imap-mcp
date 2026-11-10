@@ -30,7 +30,7 @@ Registered only when `IMAP_READ_ONLY=false`.
 | `set_message_flags`    | Set or clear flags and keywords — read, flagged, and the assistant's own. **essential**  |
 | `move_messages` 👤     | Move or copy messages between folders. **essential**                                     |
 | `delete_messages` 👤   | Delete: sets `\Deleted` and expunges. Not the same as moving to Trash                    |
-| `save_draft`           | Append a draft to the drafts folder. This server never **sends** anything                |
+| `save_draft`           | Append a draft, optionally with attachments, to the drafts folder. Never **sends**       |
 | `manage_mailbox` 👤    | Create, rename and delete folders — 👤 for `delete`, 🔒 for `rename`, nothing for `create` |
 
 👤 **asks a person** through MCP elicitation, a dialog the model cannot answer on its

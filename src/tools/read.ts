@@ -60,6 +60,7 @@ import { READ_ONLY } from './annotations.js';
 import type { Config } from '../config.js';
 import { saveAttachment } from '../download.js';
 import { downloadCapped } from '../stream.js';
+import { MAX_DRAFT_ATTACHMENTS } from '../draft-attachments.js';
 import { ToolInputError } from '../errors.js';
 import {
   collectFetch,
@@ -190,6 +191,19 @@ export function registerReadTools(
             .describe(
               'How long one IMAP command may take before the call is abandoned (IMAP_COMMAND_TIMEOUT_SECONDS).'
             ),
+          draft_attachment_max_bytes: z
+            .number()
+            .int()
+            .describe(
+              'Largest single attachment save_draft attaches (IMAP_ATTACHMENT_MAX_BYTES).'
+            ),
+          draft_max_bytes: z
+            .number()
+            .int()
+            .describe(
+              'Largest total of all attachments of one draft (IMAP_DRAFT_MAX_BYTES).'
+            ),
+          draft_max_attachments: z.number().int(),
         }),
       }),
     },
@@ -268,6 +282,9 @@ export function registerReadTools(
             max_inline_attachment_bytes: config.imap.maxAttachmentBytes,
             allowed_attachment_types: config.imap.allowedAttachmentTypes,
             command_timeout_seconds: config.imap.commandTimeoutMs / 1000,
+            draft_attachment_max_bytes: config.imap.draftAttachmentMaxBytes,
+            draft_max_bytes: config.imap.draftMaxBytes,
+            draft_max_attachments: MAX_DRAFT_ATTACHMENTS,
           },
         });
       })
@@ -1149,7 +1166,7 @@ function publicAttachment(
   };
 }
 
-async function fetchOne(
+export async function fetchOne(
   connection: ImapConnection,
   uid: number,
   ms: number,
